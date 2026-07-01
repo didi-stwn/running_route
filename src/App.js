@@ -1005,13 +1005,17 @@ export default function App() {
         ? [50, 100, 150, 200, 300, 400, 500, 600, 800, 1000, 1200, 1500, 1800, 2200, 2600, 3000]
         : [50, 100, 150, 200, 300, 400, 500, 600, 800];
 
-      // Try all side + offset combinations (collect everything)
+      // Try side + offset combinations — limit to ~7 total attempts
+      const MAX_ATTEMPTS = 6; // 6 detour attempts + 1 direct = 7 total
       const tried = new Set();
+      let attemptsLeft = MAX_ATTEMPTS;
       for (const side of sideSets) {
         for (const off of baseOffsets) {
+          if (attemptsLeft <= 0) break;
           const key = `${side}:${off}`;
           if (tried.has(key)) continue;
           tried.add(key);
+          attemptsLeft--;
           const attemptNum = log.length;
           const sideLabel = side === 1 ? "right" : "left";
           setStatus({ type: "loading", msg: `Trying ${sideLabel} detour ${off}m... attempt ${attemptNum}` });
@@ -1035,6 +1039,7 @@ export default function App() {
             log.push({ attempt: attemptNum, dist: "err", ok: false });
           }
         }
+        if (attemptsLeft <= 0) break;
       }
 
       // Interpolation: if at least 2 results, find "sweet spot" offset
