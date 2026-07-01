@@ -82,8 +82,7 @@ async function getRoute(coords, profile = "driving-car") {
       },
     }],
   };
-  // Enrich with elevation data (non-fatal — returns original if API fails)
-  return await enrichElevation(geojson);
+  return geojson;
 }
 
 // Enrich 2D coordinates [lng, lat] with elevation data from Open-Elevation API
@@ -108,22 +107,27 @@ async function enrichElevation(geojson) {
   // Build lookup map: "lng,lat" → elevation
   const lookup = new Map();
   try {
-    // Query in batches of 100
+    // Query in batches of 100 — fire ALL batches in parallel
+    const batches = [];
     for (let i = 0; i < sampleCoords.length; i += 100) {
       const batch = sampleCoords.slice(i, i + 100);
       const locations = batch.map(([lng, lat]) => ({ latitude: lat, longitude: lng }));
-      const res = await fetch("https://api.open-elevation.com/api/v1/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ locations }),
-      });
-      if (!res.ok) throw new Error(`Elevation API error ${res.status}`);
-      const data = await res.json();
-      data.results.forEach((r, j) => {
-        const [lng, lat] = batch[j];
-        lookup.set(`${lng},${lat}`, r.elevation);
-      });
+      batches.push(
+        fetch("https://api.open-elevation.com/api/v1/lookup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ locations }),
+        }).then(async (res) => {
+          if (!res.ok) throw new Error(`Elevation API error ${res.status}`);
+          const data = await res.json();
+          data.results.forEach((r, j) => {
+            const [lng, lat] = batch[j];
+            lookup.set(`${lng},${lat}`, r.elevation);
+          });
+        })
+      );
     }
+    await Promise.all(batches);
   } catch (e) {
     console.warn("Elevation fetch failed (non-fatal):", e.message);
     return geojson; // Non-fatal — return original 2D coords
@@ -909,8 +913,9 @@ export default function App() {
       const marginM = parseFloat(form.margin || 0) * 1000;
       const dist = parseFloat(distKm) * 1000;
       const ok = dist >= targetM - marginM && dist <= targetM + marginM;
-      setRoute(geojson);
-      const elev = extractElevationProfile(geojson);
+      const enrichedGeo = await enrichElevation(geojson);
+      setRoute(enrichedGeo);
+      const elev = extractElevationProfile(enrichedGeo);
       setElevationData(elev);
       if (!elev || elev.length < 2) setShowElevationChart(false);
       setRouteInfo(ri => ({ ...ri, distKm, ok }));
@@ -1093,10 +1098,11 @@ export default function App() {
       setAltIdx(0);
 
       const best = allAlts[0];
-      const intermedCoords = sampleIntermediateWaypoints(best.geojson, 3);
+      const enrichedBest = await enrichElevation(best.geojson);
+      const intermedCoords = sampleIntermediateWaypoints(enrichedBest, 3);
       setWaypoints(intermedCoords);
-      setRoute(best.geojson);
-      setElevationData(extractElevationProfile(best.geojson));
+      setRoute(enrichedBest);
+      setElevationData(extractElevationProfile(enrichedBest));
       setRouteInfo({ distKm: best.distKm, ok: best.ok, targetKm: parseFloat(distance), marginKm: parseFloat(margin || 0) });
       setStatus({
         type: best.ok ? "success" : "warn",
@@ -1110,13 +1116,14 @@ export default function App() {
   }, [form, startCoord, endCoord, profile]);
 
   // ─── Cycle to next alternative route ────────────────────────────────────────
-  const nextAlternative = useCallback(() => {
+  const nextAlternative = useCallback(async () => {
     if (altRoutes.length <= 1) return;
     const nextIdx = (altIdx + 1) % altRoutes.length;
     setAltIdx(nextIdx);
     const alt = altRoutes[nextIdx];
-    setRoute(alt.geojson);
-    const elev = extractElevationProfile(alt.geojson);
+    const enrichedAlt = await enrichElevation(alt.geojson);
+    setRoute(enrichedAlt);
+    const elev = extractElevationProfile(enrichedAlt);
     setElevationData(elev);
     if (!elev || elev.length < 2) setShowElevationChart(false);
     const intermedCoords = sampleIntermediateWaypoints(alt.geojson, 3);
