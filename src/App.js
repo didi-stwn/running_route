@@ -1,9 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const ORS_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImQ0NGQwN2JhYzc5ZDQwZjVhOTllZWJhNzcxZTliNGM5IiwiaCI6Im11cm11cjY0In0=";
-const ORS_BASE = "https://api.openrouteservice.org";
-// add comment
+const OSRM_BASE = "http://router.project-osrm.org";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function toRad(d) { return d * Math.PI / 180; }
@@ -45,19 +43,111 @@ async function reverseGeocode(lat, lon) {
   return data.display_name || `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
 }
 
+// Map app profiles to OSRM profiles
+function osrmProfile(appProfile) {
+  const map = {
+    "driving-car": "driving",
+    "cycling-regular": "cycling",
+    "cycling-mountain": "cycling",
+    "foot-walking": "walking",
+    "foot-hiking": "walking",
+  };
+  return map[appProfile] || "driving";
+}
+
 async function getRoute(coords, profile = "driving-car") {
-  // Strip elevation to [lon, lat] — ORS rejects 3D coordinates
+  // Strip elevation to [lon, lat] — OSRM only accepts 2D
   const flat = coords.map(c => c.length > 2 ? [c[0], c[1]] : c);
-  const res = await fetch(`${ORS_BASE}/v2/directions/${profile}/geojson`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": ORS_API_KEY },
-    body: JSON.stringify({ coordinates: flat, elevation: true }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `ORS error ${res.status}`);
+  // OSRM expects lon,lat pairs separated by semicolons
+  const locs = flat.map(([lng, lat]) => `${lng},${lat}`).join(";");
+  const url = `${OSRM_BASE}/route/v1/${osrmProfile(profile)}/${locs}?geometries=geojson&overview=full&alternatives=false&steps=false`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`OSRM error ${res.status}`);
+  const data = await res.json();
+  if (data.code !== "Ok" || !data.routes?.length) {
+    throw new Error(data.message || "OSRM returned no route");
   }
-  return res.json();
+  const route = data.routes[0];
+  // Normalize OSRM response into the same GeoJSON shape that ORS used
+  const geojson = {
+    type: "FeatureCollection",
+    features: [{
+      type: "Feature",
+      geometry: {
+        type: "LineString",
+        coordinates: route.geometry.coordinates,
+      },
+      properties: {
+        summary: { distance: route.distance, duration: route.duration },
+      },
+    }],
+  };
+  // Enrich with elevation data (non-fatal — returns original if API fails)
+  return await enrichElevation(geojson);
+}
+
+// Enrich 2D coordinates [lng, lat] with elevation data from Open-Elevation API
+async function enrichElevation(geojson) {
+  const coords = geojson.features[0].geometry.coordinates;
+  if (!coords || coords.length === 0) return geojson;
+  // Don't re-fetch if already 3D
+  if (coords[0].length >= 3) return geojson;
+
+  // Downsample to ~200 points max for API efficiency
+  let sampleCoords = coords;
+  if (coords.length > 200) {
+    const step = coords.length / 200;
+    sampleCoords = [];
+    for (let i = 0; i < coords.length; i++) {
+      if (i % Math.ceil(step) === 0 || i === coords.length - 1) {
+        sampleCoords.push(coords[i]);
+      }
+    }
+  }
+
+  // Build lookup map: "lng,lat" → elevation
+  const lookup = new Map();
+  try {
+    // Query in batches of 100
+    for (let i = 0; i < sampleCoords.length; i += 100) {
+      const batch = sampleCoords.slice(i, i + 100);
+      const locations = batch.map(([lng, lat]) => ({ latitude: lat, longitude: lng }));
+      const res = await fetch("https://api.open-elevation.com/api/v1/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locations }),
+      });
+      if (!res.ok) throw new Error(`Elevation API error ${res.status}`);
+      const data = await res.json();
+      data.results.forEach((r, j) => {
+        const [lng, lat] = batch[j];
+        lookup.set(`${lng},${lat}`, r.elevation);
+      });
+    }
+  } catch (e) {
+    console.warn("Elevation fetch failed (non-fatal):", e.message);
+    return geojson; // Non-fatal — return original 2D coords
+  }
+
+  // Interpolate elevation for all original coordinates
+  const enriched = coords.map(c => {
+    const key = `${c[0]},${c[1]}`;
+    const ele = lookup.get(key);
+    if (ele != null) return [c[0], c[1], ele];
+    // Find nearest sampled point
+    let best = null, bestDist = Infinity;
+    for (const [k, v] of lookup) {
+      const [lk, ll] = k.split(",").map(Number);
+      const d = haversine([c[0], c[1]], [lk, ll]);
+      if (d < bestDist) { bestDist = d; best = v; }
+    }
+    return [c[0], c[1], best || 0];
+  });
+
+  return {
+    ...geojson,
+    features: [{ ...geojson.features[0], geometry: { ...geojson.features[0].geometry, coordinates: enriched } }],
+  };
 }
 
 // Build a ONE-WAY detour route — all waypoints offset to one side of the direct
@@ -130,89 +220,66 @@ function exportGPX(routeGeoJson, distanceKm) {
     `    <trkpt lat="${lat.toFixed(6)}" lon="${lon.toFixed(6)}">${ele ? `<ele>${ele.toFixed(1)}</ele>` : ""}</trkpt>`
   ).join("\n");
   const gpx = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="RunRoute Finder"
-  xmlns="http://www.topografix.com/GPX/1/1">
-  <metadata><name>Run ${distanceKm} km</name><time>${now}</time></metadata>
-  <trk><name>Run ${distanceKm} km</name><trkseg>
+<gpx version="1.1" creator="RunRoute" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>RunRoute ${distanceKm} km</name>
+    <trkseg>
 ${trkpts}
-  </trkseg></trk>
+    </trkseg>
+  </trk>
 </gpx>`;
   const blob = new Blob([gpx], { type: "application/gpx+xml" });
-  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = `run-${distanceKm}km.gpx`; a.click();
-  URL.revokeObjectURL(url);
+  a.href = URL.createObjectURL(blob);
+  a.download = `route-${distanceKm}km.gpx`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
-// ─── GPX Import ───────────────────────────────────────────────────────────────
 function parseGPX(xmlText) {
   const parser = new DOMParser();
-  const doc = parser.parseFromString(xmlText, "text/xml");
-  const errNode = doc.querySelector("parsererror");
-  if (errNode) throw new Error("Invalid GPX XML file");
+  const doc = parser.parseFromString(xmlText, "application/xml");
+  const parseError = doc.querySelector("parsererror");
+  if (parseError) throw new Error("Invalid GPX XML");
 
-  // Helper: querySelectorAll tolerant to XML namespaces (some browsers require local-name())
-  const qsa = (sel) => {
-    const simple = doc.querySelectorAll(sel);
-    if (simple.length > 0) return simple;
-    // Fallback: use local-name() for namespaced GPX
-    const tag = sel.replace(/^[a-z]+/, (m) => `*[local-name()="${m}"]`);
-    return doc.querySelectorAll(tag);
-  };
+  const trkpts = doc.querySelectorAll("trkpt");
+  if (!trkpts.length) throw new Error("No track points found in GPX");
+  const coords = [];
+  trkpts.forEach(pt => {
+    const lat = parseFloat(pt.getAttribute("lat"));
+    const lon = parseFloat(pt.getAttribute("lon"));
+    const eleEl = pt.querySelector("ele");
+    const ele = eleEl ? parseFloat(eleEl.textContent) : 0;
+    if (!isNaN(lat) && !isNaN(lon)) coords.push([lon, lat, ele]);
+  });
+  if (coords.length < 2) throw new Error("Need at least 2 track points");
 
-  // Extract trackpoints from all trkseg elements
-  const trkpts = qsa("trkpt");
-  if (trkpts.length === 0) {
-    // Also try waypoints (<wpt>) if no trackpoints
-    const wpts = qsa("wpt");
-    if (wpts.length === 0) throw new Error("No trackpoints or waypoints found in GPX file");
-    const coords = Array.from(wpts).map(el => {
-      const lon = parseFloat(el.getAttribute("lon"));
-      const lat = parseFloat(el.getAttribute("lat"));
-      if (isNaN(lon) || isNaN(lat)) return null;
-      const ele = el.querySelector("ele") || el.querySelector("*[local-name()='ele']");
-      return ele ? [lon, lat, parseFloat(ele.textContent)] : [lon, lat];
-    }).filter(Boolean);
-    if (coords.length < 2) throw new Error("GPX file contains fewer than 2 valid trackpoints");
-    const distM = coords.reduce((sum, _, i) => i === 0 ? 0 : sum + haversine(coords[i - 1], coords[i]), 0);
-    const geojson = {
-      type: "FeatureCollection",
-      features: [{ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: { summary: { distance: distM } } }],
-    };
-    return { geojson, distanceKm: (distM / 1000).toFixed(2), coords, startCoord: coords[0], endCoord: coords[coords.length - 1], waypointCount: coords.length };
-  }
-
-  const coords = Array.from(trkpts).map(el => {
-    const lon = parseFloat(el.getAttribute("lon"));
-    const lat = parseFloat(el.getAttribute("lat"));
-    if (isNaN(lon) || isNaN(lat)) return null;
-    const ele = el.querySelector("ele") || el.querySelector("*[local-name()='ele']");
-    return ele ? [lon, lat, parseFloat(ele.textContent)] : [lon, lat];
-  }).filter(Boolean);
-
-  if (coords.length < 2) throw new Error("GPX file contains fewer than 2 valid trackpoints");
-
-  const distM = coords.reduce((sum, _, i) => i === 0 ? 0 : sum + haversine(coords[i - 1], coords[i]), 0);
   const geojson = {
     type: "FeatureCollection",
     features: [{
       type: "Feature",
       geometry: { type: "LineString", coordinates: coords },
-      properties: { summary: { distance: distM } },
+      properties: { summary: { distance: 0, duration: 0 } },
     }],
   };
 
+  // Compute total distance
+  let totalDist = 0;
+  for (let i = 1; i < coords.length; i++) {
+    totalDist += haversine(coords[i - 1], coords[i]);
+  }
+  geojson.features[0].properties.summary.distance = totalDist;
+
   return {
     geojson,
-    distanceKm: (distM / 1000).toFixed(2),
-    coords,
-    startCoord: coords[0],
-    endCoord: coords[coords.length - 1],
+    startCoord: [coords[0][0], coords[0][1]],
+    endCoord: [coords[coords.length - 1][0], coords[coords.length - 1][1]],
+    distanceKm: (totalDist / 1000).toFixed(2),
     waypointCount: coords.length,
   };
 }
 
-// ─── Styles (outside component — never recreated) ─────────────────────────────
+// ─── Style Constants ──────────────────────────────────────────────────────────
 const S = {
   app: { display: "flex", height: "100vh", fontFamily: "'Inter','Segoe UI',system-ui,sans-serif", background: "#0d1117", color: "#e6edf3", overflow: "hidden" },
   panel: { width: 340, minWidth: 310, background: "#161b22", borderRight: "1px solid #21262d", padding: "20px 16px", display: "flex", flexDirection: "column", overflowY: "auto", gap: "6px" },
@@ -307,12 +374,15 @@ const MapViewInner = function MapView({
 
     if (showElevationChart && hoverChartIdx != null && routeGeoJson) {
       const coords = routeGeoJson.features[0].geometry.coordinates;
-      if (hoverChartIdx < coords.length) {
-        const [lon, lat] = coords[hoverChartIdx];
-        hoverMarkerRef.current = L.circleMarker([lat, lon], {
-          radius: 8, color: "#ff4444", weight: 3, fillColor: "#ff4444", fillOpacity: 1,
-          zIndexOffset: 2000,
-        }).addTo(map);
+      if (coords && hoverChartIdx >= 0 && hoverChartIdx < coords.length) {
+        const coord = coords[hoverChartIdx];
+        if (coord && coord.length >= 2) {
+          const [lon, lat] = coord;
+          hoverMarkerRef.current = L.circleMarker([lat, lon], {
+            radius: 8, color: "#ff4444", weight: 3, fillColor: "#ff4444", fillOpacity: 1,
+            zIndexOffset: 2000,
+          }).addTo(map);
+        }
       }
     }
   }, [hoverChartIdx, showElevationChart, routeGeoJson]);
@@ -631,7 +701,9 @@ const MapViewInner = function MapView({
         const handleChartLeave = () => setHoverChartIdx(null);
 
         // Hover cursor X position
-        const cursorX = hoverChartIdx != null ? padL + (data[hoverChartIdx].distKm / totalDist) * plotW : null;
+        const cursorX = hoverChartIdx != null && data[hoverChartIdx]
+          ? padL + (data[hoverChartIdx].distKm / totalDist) * plotW
+          : null;
 
         return (
           <div style={{
@@ -664,10 +736,14 @@ const MapViewInner = function MapView({
               ))}
               <text x={10} y={padT + plotH / 2} textAnchor="middle" fill="#30363d" fontSize="16" fontFamily="monospace" transform={`rotate(-90,10,${padT + plotH / 2})`}>m</text>
               <text x={padL + plotW / 2} y={H - 1} textAnchor="middle" fill="#30363d" fontSize="16" fontFamily="monospace">km</text>
-              <circle cx={padL} cy={padT + plotH - ((data[0].ele - minEle) / range) * plotH} r="3" fill="#e6edf3" stroke="#0d1117" strokeWidth="1" />
-              <circle cx={padL + plotW} cy={padT + plotH - ((data[data.length - 1].ele - minEle) / range) * plotH} r="3" fill="#22ff88" stroke="#0d1117" strokeWidth="1" />
+              {data[0] && (
+                <circle cx={padL} cy={padT + plotH - ((data[0].ele - minEle) / range) * plotH} r="3" fill="#e6edf3" stroke="#0d1117" strokeWidth="1" />
+              )}
+              {data[data.length - 1] && (
+                <circle cx={padL + plotW} cy={padT + plotH - ((data[data.length - 1].ele - minEle) / range) * plotH} r="3" fill="#22ff88" stroke="#0d1117" strokeWidth="1" />
+              )}
               {/* Hover cursor */}
-              {cursorX != null && (
+              {cursorX != null && hoverChartIdx != null && data[hoverChartIdx] && (
                 <>
                   <line x1={cursorX} y1={padT} x2={cursorX} y2={padT + plotH} stroke="#ff4444" strokeWidth="2" strokeDasharray="4 2" />
                   <circle cx={cursorX} cy={padT + plotH - ((data[hoverChartIdx].ele - minEle) / range) * plotH} r="5" fill="#ff4444" stroke="#0d1117" strokeWidth="2" />
@@ -741,7 +817,9 @@ export default function App() {
       const result = parseGPX(text);
 
       setRoute(result.geojson);
-      setElevationData(extractElevationProfile(result.geojson));
+      const gpxElev = extractElevationProfile(result.geojson);
+      setElevationData(gpxElev);
+      if (!gpxElev || gpxElev.length < 2) setShowElevationChart(false);
       setStartCoord(result.startCoord);
       setEndCoord(result.endCoord);
       const intermedCoords = sampleIntermediateWaypoints(result.geojson, Math.min(3, result.waypointCount > 10 ? 3 : 1));
@@ -832,7 +910,9 @@ export default function App() {
       const dist = parseFloat(distKm) * 1000;
       const ok = dist >= targetM - marginM && dist <= targetM + marginM;
       setRoute(geojson);
-      setElevationData(extractElevationProfile(geojson));
+      const elev = extractElevationProfile(geojson);
+      setElevationData(elev);
+      if (!elev || elev.length < 2) setShowElevationChart(false);
       setRouteInfo(ri => ({ ...ri, distKm, ok }));
       setStatus({
         type: ok ? "success" : "warn",
@@ -1031,7 +1111,9 @@ export default function App() {
     setAltIdx(nextIdx);
     const alt = altRoutes[nextIdx];
     setRoute(alt.geojson);
-    setElevationData(extractElevationProfile(alt.geojson));
+    const elev = extractElevationProfile(alt.geojson);
+    setElevationData(elev);
+    if (!elev || elev.length < 2) setShowElevationChart(false);
     const intermedCoords = sampleIntermediateWaypoints(alt.geojson, 3);
     setWaypoints(intermedCoords);
     setRouteInfo(ri => ({
