@@ -980,7 +980,7 @@ export default function App() {
 
     try {
       // Step 1: Get the direct walking route (follows actual roads)
-      setStatus({ type: "loading", msg: "Requesting direct route from OpenRouteService..." });
+      setStatus({ type: "loading", msg: "Requesting direct route from OSRM..." });
       const directGeoJson = await getRoute([prevStart, prevEnd], profile);
       const directCoords = directGeoJson.features[0].geometry.coordinates;
       const directDist = directGeoJson.features[0].properties.summary.distance;
