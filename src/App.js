@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const OSRM_BASE = "http://router.project-osrm.org";
+const OSRM_BASE = "https://router.project-osrm.org";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function toRad(d) { return d * Math.PI / 180; }
