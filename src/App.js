@@ -116,7 +116,8 @@ async function enrichElevation(geojson) {
       const batch = sampleCoords.slice(i, i + MAX_PER_REQUEST);
       const locs = batch.map(([lng, lat]) => `${lat},${lng}`).join("|");
       const url = `https://api.opentopodata.org/v1/aster30m?locations=${locs}`;
-      const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
+      // https://corsproxy.io
+      const proxyUrl = `https://custom-proxy-sage.vercel.app/?url=${encodeURIComponent(url)}`;
       batchData.push(batch);
       batchFetches.push(
         fetch(proxyUrl).then(res => {
