@@ -48,9 +48,7 @@ function osrmProfile(appProfile) {
   const map = {
     "driving-car": "driving",
     "cycling-regular": "cycling",
-    "cycling-mountain": "cycling",
     "foot-walking": "walking",
-    "foot-hiking": "walking",
   };
   return map[appProfile] || "driving";
 }
@@ -85,7 +83,8 @@ async function getRoute(coords, profile = "driving-car") {
   return geojson;
 }
 
-// Enrich 2D coordinates [lng, lat] with elevation data from Open-Elevation API
+// Enrich 2D coordinates [lng, lat] with elevation data from OpenTopoData API (proxy)
+// Uses Promise.all for parallel batch requests
 async function enrichElevation(geojson) {
   const coords = geojson.features[0].geometry.coordinates;
   if (!coords || coords.length === 0) return geojson;
@@ -107,27 +106,41 @@ async function enrichElevation(geojson) {
   // Build lookup map: "lng,lat" → elevation
   const lookup = new Map();
   try {
-    // Query in batches of 100 — fire ALL batches in parallel
-    const batches = [];
-    for (let i = 0; i < sampleCoords.length; i += 100) {
-      const batch = sampleCoords.slice(i, i + 100);
-      const locations = batch.map(([lng, lat]) => ({ latitude: lat, longitude: lng }));
-      batches.push(
-        fetch("https://api.open-elevation.com/api/v1/lookup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ locations }),
-        }).then(async (res) => {
-          if (!res.ok) throw new Error(`Elevation API error ${res.status}`);
-          const data = await res.json();
-          data.results.forEach((r, j) => {
-            const [lng, lat] = batch[j];
-            lookup.set(`${lng},${lat}`, r.elevation);
-          });
+    const MAX_PER_REQUEST = 100;
+    // Prepare all batch URLs
+    const batchFetches = [];
+    const batchData = [];
+    // Dev: proxy via /api-topo (CORS handled by setupProxy.js)
+    // Prod: direct to opentopodata.org (CORS handled by your server/proxy)
+    const topoBase = process.env.NODE_ENV === 'development'
+      ? '/api-topo'
+      : 'https://api.opentopodata.org';
+    for (let i = 0; i < sampleCoords.length; i += MAX_PER_REQUEST) {
+      const batch = sampleCoords.slice(i, i + MAX_PER_REQUEST);
+      const locs = batch.map(([lng, lat]) => `${lat},${lng}`).join("|");
+      const url = `${topoBase}/v1/aster30m?locations=${locs}`;
+      batchData.push(batch);
+      batchFetches.push(
+        fetch(url).then(res => {
+          if (!res.ok) throw new Error(`OpenTopoData error ${res.status}`);
+          return res.json();
         })
       );
     }
-    await Promise.all(batches);
+    // Fire all requests in parallel
+    const allData = await Promise.all(batchFetches);
+    // Collect results
+    allData.forEach((data, idx) => {
+      const batch = batchData[idx];
+      if (data.results) {
+        data.results.forEach((r, j) => {
+          if (r.elevation != null) {
+            const [lng, lat] = batch[j];
+            lookup.set(`${lng},${lat}`, r.elevation);
+          }
+        });
+      }
+    });
   } catch (e) {
     console.warn("Elevation fetch failed (non-fatal):", e.message);
     return geojson; // Non-fatal — return original 2D coords
@@ -1247,13 +1260,11 @@ export default function App() {
           <select
             value={profile}
             onChange={e => setProfile(e.target.value)}
-            style={{ ...S.input, cursor: "pointer" }}
+            style={{ ...S.input, cursor: "pointer", minHeight: 38 }}
           >
             <option value="driving-car">🚗 Driving (Car)</option>
             <option value="cycling-regular">🚴 Cycling</option>
-            <option value="cycling-mountain">⛰️ Mountain Bike</option>
             <option value="foot-walking">🚶 Walking / Running</option>
-            <option value="foot-hiking">🥾 Hiking</option>
           </select>
 
           {/* Find Route */}
