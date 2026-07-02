@@ -112,16 +112,14 @@ async function enrichElevation(geojson) {
     const batchData = [];
     // Dev: proxy via /api-topo (CORS handled by setupProxy.js)
     // Prod: direct to opentopodata.org (CORS handled by your server/proxy)
-    const topoBase = process.env.NODE_ENV === 'development'
-      ? '/api-topo'
-      : 'https://api.opentopodata.org';
     for (let i = 0; i < sampleCoords.length; i += MAX_PER_REQUEST) {
       const batch = sampleCoords.slice(i, i + MAX_PER_REQUEST);
       const locs = batch.map(([lng, lat]) => `${lat},${lng}`).join("|");
-      const url = `${topoBase}/v1/aster30m?locations=${locs}`;
+      const url = `https://api.opentopodata.org/v1/aster30m?locations=${locs}`;
+      const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
       batchData.push(batch);
       batchFetches.push(
-        fetch(url).then(res => {
+        fetch(proxyUrl).then(res => {
           if (!res.ok) throw new Error(`OpenTopoData error ${res.status}`);
           return res.json();
         })
@@ -615,7 +613,7 @@ const MapViewInner = function MapView({
           letterSpacing: 1, zIndex: 1000, pointerEvents: "none",
         }}>⟳ Recalculating route...</div>
       )}
-      {!isRerouting && routeGeoJson &&!isMobile&& (
+      {!isRerouting && routeGeoJson && !isMobile && (
         <div style={{
           position: "absolute", top: 16, left: "50%", transform: "translateX(-50%)",
           background: "#161b22cc", border: "1px solid #30363d", borderRadius: 8,
@@ -630,9 +628,9 @@ const MapViewInner = function MapView({
           onClick={() => elevationData && elevationData.length > 1 && onToggleElevationChart()}
           disabled={!elevationData || elevationData.length < 2}
           style={{
-          position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)",
+            position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)",
             padding: "7px 14px",
-            zIndex:1000,
+            zIndex: 1000,
             background: showElevationChart ? "#22ff8818" : "#161b22ee",
             color: showElevationChart ? "#22ff88" : (!elevationData || elevationData.length < 2 ? "#30363d" : "#8b949e"),
             border: `1px solid ${showElevationChart ? "#22ff8840" : "#30363d"}`,
