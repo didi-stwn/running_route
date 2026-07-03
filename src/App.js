@@ -200,6 +200,24 @@ function buildOneWayDetour(roadCoords, offsetMeters, numWaypoints = 3, side = 1)
   return result;
 }
 
+// Build a loop route from a single start point (start≈end).
+// Creates waypoints radiating outward from start in a wide arc,
+// forcing OSRM to find a road loop. The waypoints are anchored
+// at the real start coord on both ends.
+// side: 1 = clockwise arc, -1 = counter-clockwise arc
+function buildLoopDetour(startCoord, arcOffsetMeters, numWaypoints = 3, side = 1) {
+  const wps = [];
+  const arcAngles = side === 1
+    ? [30, 90, 150]   // clockwise: sweep right side
+    : [330, 270, 210]; // counter-clockwise: sweep left side
+  for (let i = 0; i < numWaypoints; i++) {
+    const frac = (i + 1) / (numWaypoints + 1);
+    const dist = arcOffsetMeters * (0.5 + frac * 0.5);
+    wps.push(movePoint(startCoord, arcAngles[i] || (arcAngles[0] + side * i * 60), dist));
+  }
+  return wps;
+}
+
 function routeDistanceKm(geojson) {
   return geojson.features[0].properties.summary.distance / 1000;
 }
@@ -529,8 +547,11 @@ const MapViewInner = function MapView({
 
     const pinIcon = (label, color = "#22ff88") => L.divIcon({
       className: "",
-      html: `<div style="width:80px; background:${color};color:#0d1117;font-weight:800;font-family:monospace;padding:4px 8px;border-radius:5px;font-size:11px;white-space:nowrap;box-shadow:0 2px 8px #0006;border:2px solid #0d111740">${label}</div>`,
-      iconAnchor: [0, 0],
+      html: `<div style="width:75px;display:flex;flex-direction:column;align-items:center;filter:drop-shadow(0 2px 6px #000c)">
+        <div style="background:${color};color:#0d1117;font-weight:800;font-family:monospace;padding:4px 10px;border-radius:6px;font-size:11px;white-space:nowrap">${label}</div>
+        <div style="width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-top:10px solid ${color};margin-top:-1px;filter:drop-shadow(0 2px 2px #0004)"></div>
+      </div>`,
+      iconAnchor: [40, 44],
     });
 
     if (startCoord) {
@@ -595,7 +616,7 @@ const MapViewInner = function MapView({
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      <div ref={mapRef} style={{ width: "100%", height: "100%" }} />
+      <div ref={mapRef} style={{ width: "100%", height: "100%", cursor: clickMode ? "pointer" : "" }} />
       {clickMode && (
         <div style={{
           position: "absolute", top: 16, left: "50%", transform: "translateX(-50%)",
@@ -999,8 +1020,12 @@ export default function App() {
       // Step 1: Get the direct walking route (follows actual roads)
       setStatus({ type: "loading", msg: "Requesting direct route from OSRM..." });
       const directGeoJson = await getRoute([prevStart, prevEnd], profile);
-      const directCoords = directGeoJson.features[0].geometry.coordinates;
+      let directCoords = directGeoJson.features[0].geometry.coordinates;
       const directDist = directGeoJson.features[0].properties.summary.distance;
+
+      // If start≈end (loop scenario, very short route), use buildLoopDetour()
+      // to create waypoints radiating outward from the start point itself.
+      const isCloseLoop = directDist < 100 || directCoords.length < 8;
 
       const log = [];
       log.push({ attempt: 0, dist: (directDist / 1000).toFixed(2), ok: directDist >= minM && directDist <= maxM });
@@ -1023,7 +1048,7 @@ export default function App() {
         : [50, 100, 150, 200, 300, 400, 500, 600, 800];
 
       // Try side + offset combinations — limit to ~7 total attempts
-      const MAX_ATTEMPTS = 6; // 6 detour attempts + 1 direct = 7 total
+      const MAX_ATTEMPTS = 10; // 6 detour attempts + 1 direct = 7 total
       const tried = new Set();
       let attemptsLeft = MAX_ATTEMPTS;
       for (const side of sideSets) {
@@ -1037,7 +1062,14 @@ export default function App() {
           const sideLabel = side === 1 ? "right" : "left";
           setStatus({ type: "loading", msg: `Trying ${sideLabel} detour ${off}m... attempt ${attemptNum}` });
           try {
-            const wps = buildOneWayDetour(directCoords, off, 3, side);
+            let wps;
+            if (isCloseLoop) {
+              // Loop route: use buildLoopDetour anchored at start point
+              const loopWps = buildLoopDetour(prevStart, off, 3, side);
+              wps = [prevStart, ...loopWps, prevEnd];
+            } else {
+              wps = buildOneWayDetour(directCoords, off, 3, side);
+            }
             const geojson = await getRoute(wps, profile);
             const dist = geojson.features[0].properties.summary.distance;
             const diff = Math.abs(dist - targetM);
@@ -1075,7 +1107,13 @@ export default function App() {
               const interpSide = interpOffset >= 0 ? 1 : -1;
               setStatus({ type: "loading", msg: `Trying interpolated detour at ${interpOffset}m...` });
               try {
-                const wps = buildOneWayDetour(directCoords, absInterp, 3, interpSide);
+                let wps;
+                if (isCloseLoop) {
+                  const loopWps = buildLoopDetour(prevStart, absInterp, 3, interpSide);
+                  wps = [prevStart, ...loopWps, prevEnd];
+                } else {
+                  wps = buildOneWayDetour(directCoords, absInterp, 3, interpSide);
+                }
                 const geojson = await getRoute(wps, profile);
                 const dist = geojson.features[0].properties.summary.distance;
                 const diff = Math.abs(dist - targetM);
@@ -1097,8 +1135,14 @@ export default function App() {
         }
       }
 
+      // For loop routes, exclude the direct (0 offset) route from best pick
+      // since it's essentially 0km and useless
+      const sortable = isCloseLoop
+        ? allAlts.filter(a => a.offsetM !== 0)
+        : allAlts;
+
       // Sort alternatives: closest-to-target first, then by distance
-      allAlts.sort((a, b) => {
+      sortable.sort((a, b) => {
         const diffA = Math.abs(a.distM - targetM);
         const diffB = Math.abs(b.distM - targetM);
         if (diffA !== diffB) return diffA - diffB;
@@ -1109,7 +1153,7 @@ export default function App() {
       setAltRoutes(allAlts);
       setAltIdx(0);
 
-      const best = allAlts[0];
+      const best = sortable[0] || allAlts[0];
       const enrichedBest = await enrichElevation(best.geojson);
       const intermedCoords = sampleIntermediateWaypoints(enrichedBest, 3);
       setWaypoints(intermedCoords);
@@ -1430,3 +1474,4 @@ export default function App() {
     </>
   );
 }
+
