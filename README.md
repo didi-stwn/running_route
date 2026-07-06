@@ -1,6 +1,52 @@
-# Getting Started with Create React App
+# Running Route Planner
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+A React-based web application for planning running routes with precise distance targets. Uses **OSRM** (Open Source Routing Machine) for road-following routes and **OpenTopoData** for elevation profiles.
+
+## Features
+
+### Route Planning
+- **Set Start & End Points** — Search by address or click directly on the map
+- **Target Distance** — Enter a desired distance (km) with optional margin
+- **Automatic Detour Algorithm** — Finds road-following routes that match your target distance by offsetting waypoints to the left/right of the direct road
+- **Multiple Alternatives** — Cycles through alternative routes within target range
+- **Loop Routes** — When start≈end, generates outward-looping route proposals
+
+### Interactive Map
+- **Click to Add Waypoints** — Click anywhere on the route to insert a waypoint
+- **Drag to Reshape** — White dot handles let you drag waypoints to reshape the route (auto-reroutes on drag)
+- **Double-click to Delete** — Remove unwanted waypoints
+- **Route Arrow Indicators** — Toggle directional arrows along the route
+
+### Elevation Profile
+- **Elevation Chart** — Toggle a profile chart showing elevation vs. distance
+- **Hover to Locate** — Hover over the chart to see the corresponding point on the map
+- **Auto-fetched** — Elevation data retrieved from OpenTopoData API via custom proxy
+
+### GPX Import/Export
+- **Export as GPX** — Download your planned route as a GPX file
+- **Import GPX** — Load a GPX file to visualize and modify existing routes
+
+### Mobile Support
+- Responsive layout adapts to mobile screens
+- Touch-friendly waypoint handles
+
+## How the Detour Algorithm Works
+
+1. **Direct Route** — OSRM calculates the shortest road route between start and end
+2. **Side Offset Waypoints** — The algorithm creates waypoints offset perpendicular to the road direction (both left and right sides)
+3. **Route Through Waypoints** — OSRM routes through these offset waypoints, creating a longer route
+4. **Interpolation** — Results are interpolated between the best above-target and below-target offsets to find the "sweet spot"
+5. **Ranking** — All alternatives are sorted by closeness to the target distance
+
+For loop routes (start ≈ end), the algorithm generates waypoints radiating outward in an arc, creating loop-shaped routes that return to the start.
+
+## Tech Stack
+
+- **React 19** with hooks (`useState`, `useEffect`, `useCallback`, `useRef`, `useMemo`)
+- **Leaflet.js** for map rendering (loaded via CDN)
+- **OSRM** — `https://router.project-osrm.org` for road routing
+- **OpenTopoData** — `https://api.opentopodata.org/v1/aster30m` for elevation data
+- **Custom Proxy** — Vercel serverless function for CORS-free API access
 
 ## Available Scripts
 
@@ -8,63 +54,27 @@ In the project directory, you can run:
 
 ### `npm start`
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
-
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
-
-### `npm test`
-
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+Runs the app in development mode.\
+Open [http://localhost:3000](http://localhost:3000) to view it in your browser.\
+The page will reload when you make changes.
 
 ### `npm run build`
 
 Builds the app for production to the `build` folder.\
 It correctly bundles React in production mode and optimizes the build for the best performance.
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+### `npm test`
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+Launches the test runner in interactive watch mode.
 
-### `npm run eject`
+## Deployment
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+The app can be deployed to GitHub Pages or any static hosting. The custom proxy (`/custom-proxy`) can be deployed to Vercel to handle CORS for the OpenTopoData API.
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### GitHub Pages
+1. Update `"homepage"` in `package.json` to your GitHub Pages URL
+2. Run `npm run build`
+3. Deploy the `build` folder to GitHub Pages
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
-
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
-
-## Learn More
-
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
-
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+### Vercel Proxy (for elevation API)
+The `custom-proxy/` directory contains a Vercel serverless function that proxies requests to OpenTopoData, avoiding CORS issues in production.
