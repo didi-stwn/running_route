@@ -2,6 +2,20 @@
 
 A React-based web application for planning running routes with precise distance targets. Uses **OSRM** (Open Source Routing Machine) for road-following routes and **OpenTopoData** for elevation profiles.
 
+## Preview
+
+<p align="center">
+  <a href="https://didi-stwn.github.io/running_route/" target="_blank" rel="noopener noreferrer">
+    <img src="public/running_route.png" alt="Running Route Planner Preview" width="100%" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://didi-stwn.github.io/running_route/" target="_blank" rel="noopener noreferrer">
+    <img src="https://img.shields.io/badge/🚀_Live_Demo-Click_Here-4FC08D?style=for-the-badge" alt="Live Demo" />
+  </a>
+</p>
+
 ## Features
 
 ### Route Planning
