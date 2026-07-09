@@ -4,7 +4,7 @@ A React-based web application for planning running routes with precise distance 
 
 ## Preview
 
-[![Running Route Planner Preview](https://raw.githubusercontent.com/didi-stwn/running_route/main/public/running_route.png)](https://didi-stwn.github.io/running_route/)
+[![Running Route Planner Preview](./public/running_route.png)](https://didi-stwn.github.io/running_route/)
 
 [![🚀 Live Demo](https://img.shields.io/badge/🚀_Live_Demo-Click_Here-4FC08D?style=for-the-badge)](https://didi-stwn.github.io/running_route/)
 
